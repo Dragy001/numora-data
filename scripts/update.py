@@ -2,6 +2,7 @@
 scripts/update.py — dopisuje nowe losowania do plików w data/ i odświeża pliki dla aplikacji Numora.
 
 Uruchamiane codziennie przez akcję GitHub (.github/workflows/update.yml), ręcznie: python3 scripts/update.py
+Pełna przebudowa historii jednej gry (np. nowej): python3 scripts/update.py --rebuild kaskada
 
 Pliki (bez nagłówka, przecinki, zera wiodące — ten sam format co w aplikacji):
     data/<gra>.csv          pełna historia, np. 7414,06.10.2026,08,26,27,35,42,46
@@ -12,7 +13,8 @@ Pliki (bez nagłówka, przecinki, zera wiodące — ten sam format co w aplikacj
 losowania o numerach większych niż ostatni w pliku, po sprawdzeniu ciągłości numeracji, dat i liczb.
 """
 
-# json — manifest; re — wyrażenia regularne; sys — kod wyjścia; time — przerwy między zapytaniami.
+# argparse — argumenty; json — manifest; re — wyrażenia regularne; sys — kod wyjścia; time — przerwy.
+import argparse
 import json
 import re
 import sys
@@ -28,22 +30,33 @@ DATA = Path(__file__).resolve().parent.parent / "data"
 RECENT_COUNT = 100
 
 # Gry: adres w archiwum, pule (ile liczb, największa liczba) i przesunięcie numeracji archiwum względem oficjalnej.
+# first_year — od którego roku budować pełną historię (--rebuild).
 GAMES = {
-    "lotto": {"slug": "lotto", "pools": [(6, 49)]},
-    "mini-lotto": {"slug": "mini-lotto", "pools": [(5, 42)]},
+    # Lotto: plik właściciela projektu jest źródłem prawdy — przebudowa z archiwum jest zablokowana (różni się w 7 starych losowaniach).
+    "lotto": {"slug": "lotto", "pools": [(6, 49)], "first_year": None},
+    "lotto-plus": {"slug": "lotto-plus", "pools": [(6, 49)], "first_year": 2012},
+    # Mini Lotto od 1992 r. (wcześniej inny format i luki w archiwum).
+    "mini-lotto": {"slug": "mini-lotto", "pools": [(5, 42)], "first_year": 1992},
     # Archiwum numeruje Eurojackpot od wejścia Polski (15.09.2017 = nr 1); oficjalny numer jest o 286 większy.
-    "eurojackpot": {"slug": "eurojackpot", "pools": [(5, 50), (2, 12)], "number_offset": 286},
+    # Liczby euro: 2 z 10 do 21.03.2022, od 25.03.2022 2 z 12 — walidujemy względem obecnego maksimum (12).
+    "eurojackpot": {"slug": "eurojackpot", "pools": [(5, 50), (2, 12)], "number_offset": 286, "first_year": 2017},
+    "ekstra-pensja": {"slug": "ekstra-pensja", "pools": [(5, 35), (1, 4)], "first_year": 2014},
+    "ekstra-premia": {"slug": "ekstra-premia", "pools": [(5, 35), (1, 4)], "first_year": 2019},
+    # Kaskada: 12 z 24, dwa losowania dziennie (14:00 i 22:00). W archiwum brakuje losowania nr 627 (28.04.2013),
+    # więc historia zaczyna się od nr 628 — bez luki w numeracji.
+    "kaskada": {"slug": "kaskada", "pools": [(12, 24)], "first_year": 2013, "first_nr": 628},
 }
 
-# Jedno losowanie w HTML archiwum: numer, data, liczby głównej puli, (opcjonalnie) liczby euro w <strong>.
-DRAW = re.compile(
-    r'class="nr_in_list"\s*>\s*(\d+)\.\s*</li>\s*'
-    r'<li class="date_in_list">\s*(\d{2}-\d{2}-\d{4})\s*</li>'
-    r'((?:\s*<li class="numbers_in_list[^"]*"\s*>\s*\d+\s*</li>)+)'
-    r'((?:\s*<li class="tsn_number_in_list[^"]*">\s*<strong>\s*\d+\s*</strong>\s*</li>)*)'
-)
-# Pojedyncza liczba wewnątrz elementu listy.
-NUMBER = re.compile(r">\s*(\d+)\s*<")
+# Archiwum: każde losowanie to osobna lista <ul>…</ul>. W niej: numer, data, liczby główne (<li class="numbers_in_list">),
+# liczby dodatkowe (euro, „1 z 4”) w <strong> wewnątrz <li class="tsn_number_in_list">. W Kaskadzie po 6. liczbie jest
+# element „nowej linii” z godziną losowania i kolejną liczbą w <span class="pierwsza_liczba_w_nowym_wierszu">.
+BLOCK = re.compile(r"<ul[^>]*>(.*?)</ul>", re.S)
+NR = re.compile(r'class="nr_in_list"\s*>\s*(\d+)\.')
+DATE = re.compile(r'class="date_in_list">\s*(\d{2}-\d{2}-\d{4})')
+# Liczba główna: element zawierający od razu liczbę (element z godziną zaczyna się od <span>, więc tu nie pasuje).
+MAIN = re.compile(r'<li class="numbers_in_list[^"]*"\s*>\s*(\d+)\s*<')
+FIRST_IN_LINE = re.compile(r'class="pierwsza_liczba_w_nowym_wierszu">\s*(\d+)')
+EXTRA = re.compile(r'class="tsn_number_in_list[^"]*">\s*<strong>\s*(\d+)')
 
 
 def read_csv(path: Path) -> list[tuple[int, datetime, list[int]]]:
@@ -77,11 +90,16 @@ def fetch_draws(game: dict, years: range) -> dict[int, tuple[datetime, list[int]
     """Losowania z archiwum z podanych lat: numer (oficjalny) → (data, liczby wszystkich pul)."""
     draws = {}
     for year in years:
-        for nr, day, main_nums, extra_nums in DRAW.findall(fetch_year(game["slug"], year)):
-            numbers = sorted(int(n) for n in NUMBER.findall(main_nums))
+        for block in BLOCK.findall(fetch_year(game["slug"], year)):
+            nr, day = NR.search(block), DATE.search(block)
+            # Listy bez numeru i daty to inne elementy strony (np. menu).
+            if not nr or not day:
+                continue
+            numbers = sorted(int(n) for n in MAIN.findall(block) + FIRST_IN_LINE.findall(block))
             if len(game["pools"]) > 1:
-                numbers += sorted(int(n) for n in NUMBER.findall(extra_nums))
-            draws[int(nr) + game.get("number_offset", 0)] = (datetime.strptime(day, "%d-%m-%Y"), numbers)
+                numbers += sorted(int(n) for n in EXTRA.findall(block))
+            # Słownik po numerze: losowanie z przełomu roku (na stronach dwóch lat) liczymy raz.
+            draws[int(nr.group(1)) + game.get("number_offset", 0)] = (datetime.strptime(day.group(1), "%d-%m-%Y"), numbers)
     return draws
 
 
@@ -147,10 +165,38 @@ def update_game(game_id: str, game: dict) -> dict:
     }
 
 
+def rebuild_game(game_id: str, game: dict) -> None:
+    """Pełna historia gry z archiwum, od first_year — dla nowych gier (nadpisuje data/<gra>.csv)."""
+    if game["first_year"] is None:
+        sys.exit(f"{game_id}: przebudowa zablokowana (plik jest źródłem prawdy)")
+    fetched = fetch_draws(game, range(game["first_year"], datetime.now().year + 1))
+    # Pomijamy losowania sprzed first_nr (np. przed luką w archiwum).
+    ordered = sorted((nr, v) for nr, v in fetched.items() if nr >= game.get("first_nr", 0))
+    # Te same zasady co przy dopisywaniu: numeracja bez luk, daty niemalejące, poprawne liczby.
+    errors = []
+    for i, (nr, (day, numbers)) in enumerate(ordered):
+        if nr != ordered[0][0] + i:
+            errors.append(f"luka w numeracji przed losowaniem {nr}")
+        if i > 0 and day < ordered[i - 1][1][0]:
+            errors.append(f"data losowania {nr} wcześniejsza niż poprzedniego")
+        if not valid_numbers(game, numbers):
+            errors.append(f"niepoprawne liczby w losowaniu {nr}: {numbers}")
+    if errors:
+        sys.exit(f"{game_id}: {len(errors)} błędów, np.:\n" + "\n".join(errors[:10]))
+    (DATA / f"{game_id}.csv").write_text("\n".join(format_row(nr, d, n) for nr, (d, n) in ordered) + "\n", "utf-8")
+    print(f"{game_id}: zapisano {len(ordered)} losowań ({ordered[0][1][0]:%d.%m.%Y} – {ordered[-1][1][0]:%d.%m.%Y})")
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rebuild", choices=sorted(GAMES), help="przebuduj pełną historię jednej gry z archiwum")
+    args = parser.parse_args()
+    if args.rebuild:
+        rebuild_game(args.rebuild, GAMES[args.rebuild])
     manifest_path = DATA / "manifest.json"
     old = json.loads(manifest_path.read_text("utf-8")) if manifest_path.exists() else {}
-    games = {game_id: update_game(game_id, game) for game_id, game in GAMES.items()}
+    # Gry, dla których mamy już plik (nowe trzeba najpierw zbudować przez --rebuild).
+    games = {game_id: update_game(game_id, game) for game_id, game in GAMES.items() if (DATA / f"{game_id}.csv").exists()}
     # Znacznik czasu zmieniamy tylko przy zmianie danych — inaczej akcja robiłaby commit co dzień bez potrzeby.
     changed = games != old.get("games")
     manifest = {
