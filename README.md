@@ -7,6 +7,7 @@ Wyniki losowań Lotto, Lotto Plus, Mini Lotto, Eurojackpot, Ekstra Pensji, Ekstr
 | `data/manifest.json` | ostatni numer i data losowania każdej gry, czas aktualizacji |
 | `data/<gra>.csv` | pełna historia |
 | `data/<gra>-recent.csv` | ostatnie 100 losowań |
+| `data/prizes.json` | tabele wygranych 5 ostatnich losowań każdej gry i kumulacje Lotto/Eurojackpot (bez historii) |
 
 Format CSV (bez nagłówka): `numer,DD.MM.RRRR,liczby…` — w Eurojackpocie 5 liczb głównych, potem 2 liczby euro.
 Numeracja Eurojackpota jest oficjalna (jak na kuponach). W Ekstra Pensji i Ekstra Premii po 5 liczbach głównych jest liczba z puli 1–4.

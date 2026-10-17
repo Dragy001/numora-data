@@ -8,6 +8,8 @@ Pliki (bez nagłówka, przecinki, zera wiodące — ten sam format co w aplikacj
     data/<gra>.csv          pełna historia, np. 7414,06.10.2026,08,26,27,35,42,46
     data/<gra>-recent.csv   ostatnie RECENT_COUNT losowań (aplikacja pobiera zwykle tylko ten mały plik)
     data/manifest.json      ostatni numer i data dla każdej gry — aplikacja sprawdza go przy starcie
+    data/prizes.json        wygrane z PRIZE_DRAWS ostatnich losowań każdej gry + kumulacje Lotto i Eurojackpot
+                            (tylko bieżące dane — historii wygranych nie zbieramy)
 
 Źródło nowych losowań: roczne archiwa megalotto.pl (nieoficjalne). Historii NIE przepisujemy — dopisujemy tylko
 losowania o numerach większych niż ostatni w pliku, po sprawdzeniu ciągłości numeracji, dat i liczb.
@@ -28,6 +30,9 @@ from pathlib import Path
 DATA = Path(__file__).resolve().parent.parent / "data"
 # Ile ostatnich losowań trafia do pliku „recent” (Mini Lotto losuje codziennie — 100 to ponad 3 miesiące).
 RECENT_COUNT = 100
+# Z ilu ostatnich losowań każdej gry trzymamy tabele wygranych (kupon na wczorajsze losowanie nadal ma wynik,
+# a Kaskada losuje dwa razy dziennie). Starsze wypadają z pliku.
+PRIZE_DRAWS = 5
 
 # Gry: adres w archiwum, pule (ile liczb, największa liczba) i przesunięcie numeracji archiwum względem oficjalnej.
 # first_year — od którego roku budować pełną historię (--rebuild).
@@ -57,6 +62,16 @@ DATE = re.compile(r'class="date_in_list">\s*(\d{2}-\d{2}-\d{4})')
 MAIN = re.compile(r'<li class="numbers_in_list[^"]*"\s*>\s*(\d+)\s*<')
 FIRST_IN_LINE = re.compile(r'class="pierwsza_liczba_w_nowym_wierszu">\s*(\d+)')
 EXTRA = re.compile(r'class="tsn_number_in_list[^"]*">\s*<strong>\s*(\d+)')
+# Odnośnik do tabeli wygranych losowania.
+PRIZE_LINK = re.compile(r'href="(https://megalotto\.pl/wyniki/[^"]*wygrane-z-dnia-[^"]+)"')
+# Tabela wygranych (pierwsza na stronie; w Eurojackpot druga to inne zestawienie) i jej wiersze/komórki.
+PRIZE_TABLE = re.compile(r'<table class="dl_wygrane_table.*?</table>', re.S)
+ROW = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S)
+CELL = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S)
+# Nazwy stopni w Lotto / Lotto Plus / Mini Lotto.
+WORD_HITS = {"szóstka": 6, "piątka": 5, "czwórka": 4, "trójka": 3, "dwójka": 2}
+# Odnośniki do tabel wygranych z ostatnio pobranych stron archiwum: (gra, numer) → adres.
+PRIZE_LINKS: dict[tuple[str, int], str] = {}
 
 
 def read_csv(path: Path) -> list[tuple[int, datetime, list[int]]]:
@@ -99,7 +114,12 @@ def fetch_draws(game: dict, years: range) -> dict[int, tuple[datetime, list[int]
             if len(game["pools"]) > 1:
                 numbers += sorted(int(n) for n in EXTRA.findall(block))
             # Słownik po numerze: losowanie z przełomu roku (na stronach dwóch lat) liczymy raz.
-            draws[int(nr.group(1)) + game.get("number_offset", 0)] = (datetime.strptime(day.group(1), "%d-%m-%Y"), numbers)
+            number = int(nr.group(1)) + game.get("number_offset", 0)
+            draws[number] = (datetime.strptime(day.group(1), "%d-%m-%Y"), numbers)
+            # Zapamiętujemy odnośnik do tabeli wygranych (użyty dla ostatnich losowań).
+            link = PRIZE_LINK.search(block)
+            if link:
+                PRIZE_LINKS[(game["slug"], number)] = link.group(1)
     return draws
 
 
@@ -187,6 +207,105 @@ def rebuild_game(game_id: str, game: dict) -> None:
     print(f"{game_id}: zapisano {len(ordered)} losowań ({ordered[0][1][0]:%d.%m.%Y} – {ordered[-1][1][0]:%d.%m.%Y})")
 
 
+def tier_hits(label: str) -> list[int] | None:
+    """Stopień wygranej → trafienia w każdej puli: „piątka” → [5], „III (5 + 0)” → [5, 0], „12” → [12]."""
+    label = label.strip().lower()
+    if label in WORD_HITS:
+        return [WORD_HITS[label]]
+    pair = re.search(r"(\d+)\s*\+\s*(\d+)", label)
+    if pair:
+        return [int(pair.group(1)), int(pair.group(2))]
+    if label.isdigit():
+        return [int(label)]
+    return None
+
+
+def parse_amount(text: str) -> tuple[float | None, str | None]:
+    """Kwota z tabeli: „7 229.00” → (7229.0, None); „5 000 zł przez 20 lat” → (None, tekst)."""
+    compact = text.replace("\xa0", " ").strip()
+    if re.fullmatch(r"[\d ]+(\.\d+)?", compact):
+        return float(compact.replace(" ", "")), None
+    return None, compact or None
+
+
+def fetch_prize_table(url: str) -> list[dict]:
+    """Stopnie wygranych losowania: trafienia, liczba wygranych, kwota (albo opis, np. renta)."""
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    html = urllib.request.urlopen(request, timeout=60).read().decode("utf-8", "ignore")
+    time.sleep(1)
+    table = PRIZE_TABLE.search(html)
+    if not table:
+        return []
+    tiers = []
+    for row in ROW.findall(table.group(0)):
+        cells = [re.sub(r"<[^>]+>", "", c).strip() for c in CELL.findall(row)]
+        if len(cells) < 3 or not cells[1].isdigit():
+            continue
+        hits = tier_hits(cells[0])
+        if hits is None:
+            continue
+        amount, text = parse_amount(cells[2])
+        winners = int(cells[1])
+        # „0.00” przy braku zwycięzców to nie kwota nagrody, tylko brak wypłaty — zapisujemy jako brak danych.
+        if amount == 0 and winners == 0:
+            amount = None
+        tiers.append({"hits": hits, "winners": winners, "amount": amount, "text": text})
+    return tiers
+
+
+def fetch_jackpots() -> dict[str, float]:
+    """Kumulacje na najbliższe losowanie ze strony głównej archiwum (Lotto, Eurojackpot)."""
+    request = urllib.request.Request("https://megalotto.pl/", headers={"User-Agent": "Mozilla/5.0"})
+    html = urllib.request.urlopen(request, timeout=60).read().decode("utf-8", "ignore")
+    text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    jackpots = {}
+    for name, game_id in (("Lotto", "lotto"), ("Eurojackpot", "eurojackpot")):
+        found = re.search(r"KUMULACJA " + name + r" ([\d ]+) zł", text)
+        if found:
+            jackpots[game_id] = float(found.group(1).replace(" ", ""))
+    return jackpots
+
+
+def update_prizes() -> None:
+    """Plik data/prizes.json: tabele wygranych ostatnich losowań i kumulacje."""
+    path = DATA / "prizes.json"
+    old = json.loads(path.read_text("utf-8")) if path.exists() else {"games": {}}
+    games = {}
+    try:
+        jackpots = fetch_jackpots()
+    except Exception as error:  # strona główna nie odpowiada — zostawiamy poprzednie kumulacje
+        print(f"UWAGA: kumulacje niedostępne ({error})", file=sys.stderr)
+        jackpots = {g: v.get("jackpot") for g, v in old["games"].items() if v.get("jackpot")}
+    for game_id, game in GAMES.items():
+        csv = DATA / f"{game_id}.csv"
+        if not csv.exists():
+            continue
+        # Ostatnie losowania gry i to, co już mamy w pliku (nie pobieramy ponownie gotowych tabel).
+        last_rows = read_csv(csv)[-PRIZE_DRAWS:]
+        known = {d["drawNo"]: d for d in old["games"].get(game_id, {}).get("draws", [])}
+        draws = []
+        for nr, day, _ in reversed(last_rows):
+            tiers = known.get(nr, {}).get("tiers") or []
+            link = PRIZE_LINKS.get((game["slug"], nr))
+            if not tiers and link:
+                try:
+                    tiers = fetch_prize_table(link)
+                except Exception as error:
+                    print(f"UWAGA {game_id}: wygrane losowania {nr} niedostępne ({error})", file=sys.stderr)
+            if tiers:
+                draws.append({"drawNo": nr, "date": f"{day:%Y-%m-%d}", "tiers": tiers})
+        games[game_id] = {"draws": draws, "jackpot": jackpots.get(game_id)}
+    changed = games != old.get("games")
+    prizes = {
+        "version": 1,
+        "updatedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if changed else old.get("updatedAt"),
+        "games": games,
+    }
+    # Zapis bez wcięć — plik pobiera telefon przy każdym sprawdzeniu, więc liczy się rozmiar.
+    path.write_text(json.dumps(prizes, ensure_ascii=False, separators=(",", ":")) + "\n", "utf-8")
+    print("wygrane: " + ", ".join(f"{g} {len(v['draws'])}" for g, v in games.items()) + f"; kumulacje: {jackpots}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rebuild", choices=sorted(GAMES), help="przebuduj pełną historię jednej gry z archiwum")
@@ -205,6 +324,8 @@ def main() -> None:
         "games": games,
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", "utf-8")
+    # Wygrane i kumulacje — po aktualizacji losowań (korzysta z odnośników zebranych przy pobieraniu archiwum).
+    update_prizes()
 
 
 if __name__ == "__main__":
