@@ -1,24 +1,24 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-22T00:01:35Z",
+  "updatedAt": "2026-10-22T23:59:51Z",
   "games": {
     "lotto": {
-      "lastDrawNo": 7420,
-      "lastDate": "2026-10-20",
-      "count": 7420,
-      "recentFrom": 7321
+      "lastDrawNo": 7421,
+      "lastDate": "2026-10-22",
+      "count": 7421,
+      "recentFrom": 7322
     },
     "lotto-plus": {
-      "lastDrawNo": 7420,
-      "lastDate": "2026-10-20",
-      "count": 2207,
-      "recentFrom": 7321
+      "lastDrawNo": 7421,
+      "lastDate": "2026-10-22",
+      "count": 2208,
+      "recentFrom": 7322
     },
     "mini-lotto": {
-      "lastDrawNo": 7479,
-      "lastDate": "2026-10-21",
-      "count": 6674,
-      "recentFrom": 7380
+      "lastDrawNo": 7480,
+      "lastDate": "2026-10-22",
+      "count": 6675,
+      "recentFrom": 7381
     },
     "eurojackpot": {
       "lastDrawNo": 1000,
@@ -27,22 +27,22 @@
       "recentFrom": 901
     },
     "ekstra-pensja": {
-      "lastDrawNo": 3819,
-      "lastDate": "2026-10-21",
-      "count": 3819,
-      "recentFrom": 3720
+      "lastDrawNo": 3820,
+      "lastDate": "2026-10-22",
+      "count": 3820,
+      "recentFrom": 3721
     },
     "ekstra-premia": {
-      "lastDrawNo": 3819,
-      "lastDate": "2026-10-21",
-      "count": 2690,
-      "recentFrom": 3720
+      "lastDrawNo": 3820,
+      "lastDate": "2026-10-22",
+      "count": 2691,
+      "recentFrom": 3721
     },
     "kaskada": {
-      "lastDrawNo": 9488,
-      "lastDate": "2026-10-21",
-      "count": 8861,
-      "recentFrom": 9389
+      "lastDrawNo": 9490,
+      "lastDate": "2026-10-22",
+      "count": 8863,
+      "recentFrom": 9391
     }
   }
 }
