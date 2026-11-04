@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-11-04T01:24:03Z",
+  "updatedAt": "2026-11-04T13:11:12Z",
   "games": {
     "lotto": {
       "lastDrawNo": 7426,
@@ -39,10 +39,10 @@
       "recentFrom": 3733
     },
     "kaskada": {
-      "lastDrawNo": 9514,
-      "lastDate": "2026-11-03",
-      "count": 8887,
-      "recentFrom": 9415
+      "lastDrawNo": 9515,
+      "lastDate": "2026-11-04",
+      "count": 8888,
+      "recentFrom": 9416
     }
   }
 }
